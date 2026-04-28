@@ -62,6 +62,7 @@ def get_sheets_service():
 # スプレッドシートから日付に対応する行を検索
 # ==========================================
 def find_row_by_date(service, target_date):
+    # D列全体を取得して最後にマッチした行を返す（年をまたいでも対応）
     range_name = f"{SHEET_TAB_NAME}!{DATE_COLUMN}:{DATE_COLUMN}"
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -71,15 +72,21 @@ def find_row_by_date(service, target_date):
     values = result.get("values", [])
     target_str_formats = [
         target_date.strftime("%m/%d"),      # 例: 04/26
-        target_date.strftime("%-m/%-d"),   # 例: 4/26
+        target_date.strftime("%-m/%-d"),    # 例: 4/26
         target_date.strftime("%Y/%m/%d"),   # 例: 2026/04/26
         target_date.strftime("%-m/%-d/%Y"), # 例: 4/26/2026
         target_date.strftime("%m/%d/%Y"),   # 例: 04/26/2026
     ]
 
+    # 最後にマッチした行を返す（年をまたいでも最新年のデータを使用）
+    matched_row = None
     for i, row in enumerate(values):
         if row and row[0].strip() in target_str_formats:
-            return i + 1  # 1始まりの行番号
+            matched_row = i + 1  # 1始まりの行番号
+
+    if matched_row:
+        print(f"マッチした行: {matched_row}")
+        return matched_row
 
     print(f"日付が見つかりませんでした: {target_date}")
     return None
