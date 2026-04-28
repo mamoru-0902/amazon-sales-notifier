@@ -1,6 +1,5 @@
 import os
 import requests
-import json
 from datetime import datetime, timedelta
 import pytz
 
@@ -50,7 +49,7 @@ def get_us_dates():
     return yesterday_pt, first_day_of_month, today_pt
 
 # ==========================================
-# 注文データの取得
+# 注文データの取得（ページネーション対応）
 # ==========================================
 def get_orders(access_token, created_after, created_before):
     url = "https://sellingpartnerapi-na.amazon.com/orders/v0/orders"
@@ -60,13 +59,36 @@ def get_orders(access_token, created_after, created_before):
     }
     params = {
         "MarketplaceIds": MARKETPLACE_ID,
-        "CreatedAfter": created_after.isoformat() + "T00:00:00Z",
-        "CreatedBefore": created_before.isoformat() + "T00:00:00Z",
-        "OrderStatuses": "Shipped,Unshipped,PartiallyShipped",
+        "CreatedAfter": created_after.strftime("%Y-%m-%dT00:00:00Z"),
+        "CreatedBefore": created_before.strftime("%Y-%m-%dT00:00:00Z"),
     }
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
-    return response.json().get("payload", {}).get("Orders", [])
+
+    all_orders = []
+    while True:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json().get("payload", {})
+        all_orders.extend(data.get("Orders", []))
+        next_token = data.get("NextToken")
+        if not next_token:
+            break
+        params = {
+            "MarketplaceIds": MARKETPLACE_ID,
+            "NextToken": next_token,
+        }
+
+    return all_orders
+
+# ==========================================
+# 注文アイテムの取得
+# ==========================================
+def get_order_items(access_token, order_id):
+    url = f"https://sellingpartnerapi-na.amazon.com/orders/v0/orders/{order_id}/orderItems"
+    headers = {"x-amz-access-token": access_token}
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return []
+    return response.json().get("payload", {}).get("OrderItems", [])
 
 # ==========================================
 # 注文データをASINごとに集計
@@ -77,14 +99,7 @@ def aggregate_orders(orders, access_token, target_asins):
     for order in orders:
         order_id = order.get("AmazonOrderId")
         status = order.get("OrderStatus", "")
-
-        # 注文アイテムの取得
-        url = f"https://sellingpartnerapi-na.amazon.com/orders/v0/orders/{order_id}/orderItems"
-        headers = {"x-amz-access-token": access_token}
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            continue
-        items = response.json().get("payload", {}).get("OrderItems", [])
+        items = get_order_items(access_token, order_id)
 
         for item in items:
             asin = item.get("ASIN")
@@ -93,7 +108,7 @@ def aggregate_orders(orders, access_token, target_asins):
             quantity = int(item.get("QuantityOrdered", 0))
             price = float(item.get("ItemPrice", {}).get("Amount", 0))
 
-            if status in ["Canceled"]:
+            if status == "Canceled":
                 results[asin]["cancel_count"] += quantity
             else:
                 results[asin]["order_count"] += quantity
@@ -102,7 +117,7 @@ def aggregate_orders(orders, access_token, target_asins):
     return results
 
 # ==========================================
-# 在庫データの取得
+# FBA在庫データの取得
 # ==========================================
 def get_inventory(access_token, asin):
     url = "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries"
@@ -112,14 +127,16 @@ def get_inventory(access_token, asin):
         "granularityType": "Marketplace",
         "granularityId": MARKETPLACE_ID,
         "marketplaceIds": MARKETPLACE_ID,
-        "sellerSkus": asin,
     }
     response = requests.get(url, headers=headers, params=params)
     if response.status_code != 200:
-        return 0
+        print(f"在庫取得エラー: {response.status_code} {response.text}")
+        return "取得失敗"
+
     summaries = response.json().get("payload", {}).get("inventorySummaries", [])
-    if summaries:
-        return summaries[0].get("totalQuantity", 0)
+    for item in summaries:
+        if item.get("asin") == asin:
+            return item.get("inventoryDetails", {}).get("fulfillableQuantity", 0)
     return 0
 
 # ==========================================
@@ -134,11 +151,13 @@ def get_product_name(access_token, asin):
     }
     response = requests.get(url, headers=headers, params=params)
     if response.status_code != 200:
-        return asin
+        print(f"商品名取得エラー: {response.status_code} {response.text}")
+        return None
+
     summaries = response.json().get("summaries", [])
     if summaries:
-        return summaries[0].get("itemName", asin)
-    return asin
+        return summaries[0].get("itemName", None)
+    return None
 
 # ==========================================
 # Slackに通知を送信
@@ -157,36 +176,44 @@ def main():
     access_token = get_access_token()
     yesterday_pt, first_day_of_month, today_pt = get_us_dates()
 
+    print(f"対象日（昨日）: {yesterday_pt}")
+    print(f"当月開始日: {first_day_of_month}")
+
     # 昨日の注文データ
+    print("昨日の注文データを取得中...")
     daily_orders = get_orders(access_token, yesterday_pt, today_pt)
     daily_results = aggregate_orders(daily_orders, access_token, ASINS)
 
     # 当月累計の注文データ
+    print("当月累計の注文データを取得中...")
     monthly_orders = get_orders(access_token, first_day_of_month, today_pt)
     monthly_results = aggregate_orders(monthly_orders, access_token, ASINS)
 
     # Slackメッセージの作成
-    message = f"📊 Amazon US 販売レポート\n"
-    message += f"━━━━━━━━━━━━━━━\n"
+    message = "📊 Amazon US 販売レポート\n"
+    message += "━━━━━━━━━━━━━━━\n"
     message += f"📅 {yesterday_pt.strftime('%Y年%m月%d日')}（US時間）\n"
-    message += f"━━━━━━━━━━━━━━━\n"
+    message += "━━━━━━━━━━━━━━━\n"
 
     for asin in ASINS:
+        # 商品名の取得（失敗時はASINのみ表示）
         product_name = get_product_name(access_token, asin)
+        display_name = f"【{asin}】\n{product_name}" if product_name else f"【{asin}】"
+
         daily = daily_results[asin]
         monthly = monthly_results[asin]
         inventory = get_inventory(access_token, asin)
 
-        message += f"\n【{asin}】{product_name}\n\n"
-        message += f"【本日の実績】\n"
+        message += f"\n{display_name}\n\n"
+        message += "【本日の実績】\n"
         message += f"注文数：{daily['order_count']}件\n"
         message += f"売上金額：${daily['sales']:,.2f}\n"
         message += f"返品・キャンセル：{daily['cancel_count']}件\n"
         message += f"在庫数：{inventory}個\n\n"
-        message += f"【当月累計】\n"
+        message += "【当月累計】\n"
         message += f"注文数：{monthly['order_count']}件\n"
         message += f"売上金額：${monthly['sales']:,.2f}\n"
-        message += f"━━━━━━━━━━━━━━━\n"
+        message += "━━━━━━━━━━━━━━━\n"
 
     send_slack_notification(message)
     print("完了しました")
