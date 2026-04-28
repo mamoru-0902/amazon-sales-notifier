@@ -1,9 +1,9 @@
 name: Amazon Sales Notifier
 
 on:
-schedule:
-  - cron: '10 8 * * *'
-  workflow_dispatch:  # 手動実行も可能
+  schedule:
+    - cron: '10 8 * * *'
+  workflow_dispatch:
 
 jobs:
   notify:
