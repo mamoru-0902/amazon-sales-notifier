@@ -12,15 +12,15 @@ jobs:
 
     steps:
       - name: リポジトリをチェックアウト
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Pythonのセットアップ
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: 依存パッケージのインストール
-        run: pip install requests pytz
+        run: pip install requests pytz google-auth google-api-python-client
 
       - name: 販売通知スクリプトの実行
         env:
@@ -29,4 +29,5 @@ jobs:
           LWA_REFRESH_TOKEN: ${{ secrets.LWA_REFRESH_TOKEN }}
           SELLER_ID: ${{ secrets.SELLER_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
         run: python notify.py
