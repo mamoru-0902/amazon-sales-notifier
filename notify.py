@@ -141,45 +141,33 @@ def aggregate_csv_data(csv_text, target_asins):
     return results
 
 # ==========================================
-# FBA在庫データの取得
+# FBA在庫レポートで在庫数を取得
 # ==========================================
 def get_inventory(access_token, sku):
-    # 方法①: sellerSkusパラメータで取得
-    url = "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries"
-    headers = {"x-amz-access-token": access_token}
-    params = {
-        "details": "true",
-        "granularityType": "Marketplace",
-        "granularityId": MARKETPLACE_ID,
-        "marketplaceIds": MARKETPLACE_ID,
-        "sellerSkus": sku,
+    url = "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports"
+    headers = {
+        "x-amz-access-token": access_token,
+        "Content-Type": "application/json",
     }
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
-        summaries = response.json().get("payload", {}).get("inventorySummaries", [])
-        if summaries:
-            details = summaries[0].get("inventoryDetails", {})
-            fulfillable = details.get("fulfillableQuantity", 0)
-            if fulfillable > 0:
-                return fulfillable
-
-    # 方法②: 全在庫から該当SKUを検索
-    params2 = {
-        "details": "true",
-        "granularityType": "Marketplace",
-        "granularityId": MARKETPLACE_ID,
-        "marketplaceIds": MARKETPLACE_ID,
+    payload = {
+        "reportType": "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
+        "marketplaceIds": [MARKETPLACE_ID],
     }
-    response2 = requests.get(url, headers=headers, params=params2)
-    if response2.status_code != 200:
-        print(f"在庫取得エラー: {response2.status_code}")
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code != 200:
+        print(f"在庫レポートリクエスト失敗: {response.status_code} {response.text}")
         return "取得失敗"
 
-    summaries2 = response2.json().get("payload", {}).get("inventorySummaries", [])
-    for item in summaries2:
-        if item.get("sellerSku") == sku:
-            details = item.get("inventoryDetails", {})
-            return details.get("fulfillableQuantity", 0)
+    report_id = response.json().get("reportId")
+    document_id = wait_for_report(access_token, report_id)
+    if not document_id:
+        return "取得失敗"
+
+    csv_text = get_report_document_csv(access_token, document_id)
+    reader = csv.DictReader(io.StringIO(csv_text), delimiter="\t")
+    for row in reader:
+        if row.get("seller-sku") == sku:
+            return int(row.get("afn-fulfillable-quantity", 0))
 
     print(f"在庫情報が見つかりませんでした: {sku}")
     return "取得失敗"
