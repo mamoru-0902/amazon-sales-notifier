@@ -3,6 +3,8 @@ import requests
 from datetime import datetime, timedelta
 import pytz
 import time
+import csv
+import io
 
 # ==========================================
 # 設定：ASIN・SKUリスト（追加する場合はここに追加）
@@ -11,7 +13,7 @@ PRODUCTS = [
     {
         "asin": "B0GKG32M22",
         "sku": "SH-TTDagashi30-Minibox-v2",
-        "name": "TokyoTreat Japanese Snack Box",  # APIで取得失敗時のフォールバック用
+        "name": "TokyoTreat Japanese Snack Box",
     },
     # 新しい商品を追加する場合は以下のように追加：
     # {
@@ -59,31 +61,25 @@ def get_us_dates():
     return yesterday_pt, first_day_of_month, today_pt
 
 # ==========================================
-# Sales and Traffic APIでレポートを作成・取得
+# 注文レポートをリクエスト・取得
 # ==========================================
-def request_sales_report(access_token, start_date, end_date, asin):
-    """レポートをリクエストしてレポートIDを返す"""
+def request_order_report(access_token, start_date, end_date):
     url = "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports"
     headers = {
         "x-amz-access-token": access_token,
         "Content-Type": "application/json",
     }
     payload = {
-        "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
+        "reportType": "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_ORDER_DATE_GENERAL",
         "marketplaceIds": [MARKETPLACE_ID],
         "dataStartTime": start_date.strftime("%Y-%m-%dT00:00:00Z"),
         "dataEndTime": end_date.strftime("%Y-%m-%dT23:59:59Z"),
-        "reportOptions": {
-            "dateGranularity": "DAY",
-            "asinGranularity": "CHILD",
-        },
     }
     response = requests.post(url, headers=headers, json=payload)
     response.raise_for_status()
     return response.json().get("reportId")
 
 def wait_for_report(access_token, report_id, max_wait=300):
-    """レポートが完成するまで待機"""
     url = f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports/{report_id}"
     headers = {"x-amz-access-token": access_token}
 
@@ -105,50 +101,44 @@ def wait_for_report(access_token, report_id, max_wait=300):
     print("レポートのタイムアウト")
     return None
 
-def get_report_document(access_token, document_id):
-    """レポートドキュメントのURLを取得してデータを返す"""
+def get_report_document_csv(access_token, document_id):
     url = f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}"
     headers = {"x-amz-access-token": access_token}
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     doc_url = response.json().get("url")
 
-    # レポートデータをダウンロード
     doc_response = requests.get(doc_url)
     doc_response.raise_for_status()
-    return doc_response.json()
+    return doc_response.text
 
-def get_sales_data(access_token, start_date, end_date, asin):
-    """指定期間・ASINの販売ユニット数と売上を取得"""
-    print(f"レポートをリクエスト中: {start_date} 〜 {end_date}")
-    report_id = request_sales_report(access_token, start_date, end_date, asin)
-    if not report_id:
-        return {"units": 0, "sales": 0.0, "returns": 0}
+# ==========================================
+# CSVデータをASINごとに集計
+# ==========================================
+def aggregate_csv_data(csv_text, target_asins):
+    results = {asin: {"units": 0, "sales": 0.0, "returns": 0} for asin in target_asins}
 
-    document_id = wait_for_report(access_token, report_id)
-    if not document_id:
-        return {"units": 0, "sales": 0.0, "returns": 0}
+    reader = csv.DictReader(io.StringIO(csv_text), delimiter="\t")
+    for row in reader:
+        asin = row.get("asin", "")
+        if asin not in results:
+            continue
 
-    data = get_report_document(access_token, document_id)
+        status = row.get("order-status", "")
+        if status == "Cancelled":
+            continue
 
-    # ASINに該当するデータを集計
-    total_units = 0
-    total_sales = 0.0
-    total_returns = 0
+        try:
+            quantity = int(row.get("quantity", 0))
+            price = float(row.get("item-price", 0))
+        except (ValueError, TypeError):
+            quantity = 0
+            price = 0.0
 
-    sales_by_asin = data.get("salesAndTrafficByAsin", [])
-    for item in sales_by_asin:
-        if item.get("parentAsin") == asin or item.get("childAsin") == asin:
-            summary = item.get("salesByAsin", {})
-            total_units += summary.get("unitsOrdered", 0)
-            total_sales += float(summary.get("orderedProductSales", {}).get("amount", 0))
-            total_returns += summary.get("unitsRefunded", 0)
+        results[asin]["units"] += quantity
+        results[asin]["sales"] += price
 
-    return {
-        "units": total_units,
-        "sales": total_sales,
-        "returns": total_returns,
-    }
+    return results
 
 # ==========================================
 # FBA在庫データの取得
@@ -174,25 +164,6 @@ def get_inventory(access_token, sku):
     return 0
 
 # ==========================================
-# 商品名の取得
-# ==========================================
-def get_product_name(access_token, asin, fallback_name):
-    url = f"https://sellingpartnerapi-na.amazon.com/catalog/2022-04-01/items/{asin}"
-    headers = {"x-amz-access-token": access_token}
-    params = {
-        "marketplaceIds": MARKETPLACE_ID,
-        "includedData": "summaries",
-    }
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code != 200:
-        return fallback_name
-
-    summaries = response.json().get("summaries", [])
-    if summaries:
-        return summaries[0].get("itemName", fallback_name)
-    return fallback_name
-
-# ==========================================
 # Slackに通知を送信
 # ==========================================
 def send_slack_notification(message):
@@ -212,6 +183,22 @@ def main():
     print(f"対象日（昨日）: {yesterday_pt}")
     print(f"当月開始日: {first_day_of_month}")
 
+    asins = [p["asin"] for p in PRODUCTS]
+
+    # 昨日の注文レポート取得
+    print("昨日の注文レポートをリクエスト中...")
+    daily_report_id = request_order_report(access_token, yesterday_pt, yesterday_pt)
+    daily_doc_id = wait_for_report(access_token, daily_report_id)
+    daily_csv = get_report_document_csv(access_token, daily_doc_id)
+    daily_results = aggregate_csv_data(daily_csv, asins)
+
+    # 当月累計の注文レポート取得
+    print("当月累計の注文レポートをリクエスト中...")
+    monthly_report_id = request_order_report(access_token, first_day_of_month, yesterday_pt)
+    monthly_doc_id = wait_for_report(access_token, monthly_report_id)
+    monthly_csv = get_report_document_csv(access_token, monthly_doc_id)
+    monthly_results = aggregate_csv_data(monthly_csv, asins)
+
     # Slackメッセージの作成
     message = "📊 Amazon US 販売レポート\n"
     message += "━━━━━━━━━━━━━━━\n"
@@ -221,24 +208,14 @@ def main():
     for product in PRODUCTS:
         asin = product["asin"]
         sku = product["sku"]
-        fallback_name = product["name"]
+        name = product["name"]
 
-        print(f"処理中: {asin}")
-
-        # 商品名の取得
-        product_name = get_product_name(access_token, asin, fallback_name)
-
-        # 昨日の販売データ
-        daily = get_sales_data(access_token, yesterday_pt, yesterday_pt, asin)
-
-        # 当月累計の販売データ
-        monthly = get_sales_data(access_token, first_day_of_month, yesterday_pt, asin)
-
-        # 在庫数の取得
+        daily = daily_results[asin]
+        monthly = monthly_results[asin]
         inventory = get_inventory(access_token, sku)
 
         message += f"\n【{asin}】\n"
-        message += f"{product_name}\n\n"
+        message += f"{name}\n\n"
         message += "【本日の実績】\n"
         message += f"販売数：{daily['units']}個\n"
         message += f"売上金額：${daily['sales']:,.2f}\n"
