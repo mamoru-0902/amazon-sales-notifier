@@ -144,32 +144,56 @@ def aggregate_csv_data(csv_text, target_asins):
 # FBA在庫レポートで在庫数を取得
 # ==========================================
 def get_inventory(access_token, sku):
+    # GET_FBA_INVENTORY_PLAANNING_DATAレポートで手持ち在庫を取得
     url = "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports"
     headers = {
         "x-amz-access-token": access_token,
         "Content-Type": "application/json",
     }
-    payload = {
-        "reportType": "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
-        "marketplaceIds": [MARKETPLACE_ID],
-    }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code != 200:
-        print(f"在庫レポートリクエスト失敗: {response.status_code} {response.text}")
-        return "取得失敗"
 
-    report_id = response.json().get("reportId")
-    document_id = wait_for_report(access_token, report_id)
-    if not document_id:
-        return "取得失敗"
+    # 複数のレポートタイプを順番に試す
+    report_types = [
+        "GET_FBA_MYI_ALL_INVENTORY_DATA",
+        "GET_AFN_INVENTORY_DATA",
+        "GET_AFN_INVENTORY_DATA_BY_COUNTRY",
+    ]
 
-    csv_text = get_report_document_csv(access_token, document_id)
-    reader = csv.DictReader(io.StringIO(csv_text), delimiter="\t")
-    for row in reader:
-        if row.get("seller-sku") == sku:
-            return int(row.get("afn-fulfillable-quantity", 0))
+    for report_type in report_types:
+        print(f"在庫レポートタイプを試行中: {report_type}")
+        payload = {
+            "reportType": report_type,
+            "marketplaceIds": [MARKETPLACE_ID],
+        }
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"失敗: {response.status_code}")
+            continue
 
-    print(f"在庫情報が見つかりませんでした: {sku}")
+        report_id = response.json().get("reportId")
+        document_id = wait_for_report(access_token, report_id)
+        if not document_id:
+            continue
+
+        csv_text = get_report_document_csv(access_token, document_id)
+        reader = csv.DictReader(io.StringIO(csv_text), delimiter="\t")
+        headers_list = reader.fieldnames
+        print(f"CSVヘッダー: {headers_list}")
+
+        for row in reader:
+            row_sku = row.get("seller-sku") or row.get("sku") or row.get("SKU") or ""
+            if row_sku == sku:
+                # 手持ち在庫のカラムを探す
+                quantity = (
+                    row.get("afn-fulfillable-quantity")
+                    or row.get("Afn Fulfillable Quantity")
+                    or row.get("fulfillable-quantity")
+                    or row.get("quantity-available")
+                    or "0"
+                )
+                print(f"在庫数取得成功: {quantity}")
+                return int(quantity)
+
+    print(f"全レポートタイプで取得失敗: {sku}")
     return "取得失敗"
 
 # ==========================================
