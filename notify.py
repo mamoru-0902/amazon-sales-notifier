@@ -144,6 +144,7 @@ def aggregate_csv_data(csv_text, target_asins):
 # FBA在庫データの取得
 # ==========================================
 def get_inventory(access_token, sku):
+    # 方法①: sellerSkusパラメータで取得
     url = "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries"
     headers = {"x-amz-access-token": access_token}
     params = {
@@ -154,14 +155,34 @@ def get_inventory(access_token, sku):
         "sellerSkus": sku,
     }
     response = requests.get(url, headers=headers, params=params)
-    if response.status_code != 200:
-        print(f"在庫取得エラー: {response.status_code} {response.text}")
+    if response.status_code == 200:
+        summaries = response.json().get("payload", {}).get("inventorySummaries", [])
+        if summaries:
+            details = summaries[0].get("inventoryDetails", {})
+            fulfillable = details.get("fulfillableQuantity", 0)
+            if fulfillable > 0:
+                return fulfillable
+
+    # 方法②: 全在庫から該当SKUを検索
+    params2 = {
+        "details": "true",
+        "granularityType": "Marketplace",
+        "granularityId": MARKETPLACE_ID,
+        "marketplaceIds": MARKETPLACE_ID,
+    }
+    response2 = requests.get(url, headers=headers, params=params2)
+    if response2.status_code != 200:
+        print(f"在庫取得エラー: {response2.status_code}")
         return "取得失敗"
 
-    summaries = response.json().get("payload", {}).get("inventorySummaries", [])
-    if summaries:
-        return summaries[0].get("inventoryDetails", {}).get("fulfillableQuantity", 0)
-    return 0
+    summaries2 = response2.json().get("payload", {}).get("inventorySummaries", [])
+    for item in summaries2:
+        if item.get("sellerSku") == sku:
+            details = item.get("inventoryDetails", {})
+            return details.get("fulfillableQuantity", 0)
+
+    print(f"在庫情報が見つかりませんでした: {sku}")
+    return "取得失敗"
 
 # ==========================================
 # Slackに通知を送信
