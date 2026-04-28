@@ -1,0 +1,32 @@
+name: Amazon Sales Notifier
+
+on:
+  schedule:
+    # 毎日日本時間17時に実行（UTC 08:00）
+    - cron: '0 8 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージのインストール
+        run: pip install requests pytz
+
+      - name: 販売通知スクリプトの実行
+        env:
+          LWA_CLIENT_ID: ${{ secrets.LWA_CLIENT_ID }}
+          LWA_CLIENT_SECRET: ${{ secrets.LWA_CLIENT_SECRET }}
+          LWA_REFRESH_TOKEN: ${{ secrets.LWA_REFRESH_TOKEN }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python notify.py
