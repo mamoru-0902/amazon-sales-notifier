@@ -5,6 +5,9 @@ import pytz
 import time
 import csv
 import io
+import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # ==========================================
 # 設定：ASIN・SKUリスト（追加する場合はここに追加）
@@ -24,6 +27,15 @@ PRODUCTS = [
 ]
 
 # ==========================================
+# Google Sheets設定
+# ==========================================
+SPREADSHEET_ID = "1jHV2OZfsclDfC4Irl5S0FNwxZELzsuiz3edKp2SIb94"
+SHEET_TAB_NAME = "Order数と配送計画_v2"
+DATE_COLUMN = "D"       # 日付列
+SALES_COLUMN = "F"      # 販売数入力列
+INVENTORY_COLUMN = "N"  # 在庫予測数列
+
+# ==========================================
 # 環境変数から認証情報を取得
 # ==========================================
 LWA_CLIENT_ID = os.environ["LWA_CLIENT_ID"]
@@ -31,8 +43,76 @@ LWA_CLIENT_SECRET = os.environ["LWA_CLIENT_SECRET"]
 LWA_REFRESH_TOKEN = os.environ["LWA_REFRESH_TOKEN"]
 SELLER_ID = os.environ["SELLER_ID"]
 SLACK_WEBHOOK_URL = os.environ["SLACK_WEBHOOK_URL"]
+GOOGLE_SHEETS_CREDENTIALS = os.environ["GOOGLE_SHEETS_CREDENTIALS"]
 
 MARKETPLACE_ID = "ATVPDKIKX0DER"  # Amazon US
+
+# ==========================================
+# Google Sheets APIクライアントの初期化
+# ==========================================
+def get_sheets_service():
+    credentials_info = json.loads(GOOGLE_SHEETS_CREDENTIALS)
+    credentials = service_account.Credentials.from_service_account_info(
+        credentials_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    return build("sheets", "v4", credentials=credentials)
+
+# ==========================================
+# スプレッドシートから日付に対応する行を検索
+# ==========================================
+def find_row_by_date(service, target_date):
+    range_name = f"{SHEET_TAB_NAME}!{DATE_COLUMN}:{DATE_COLUMN}"
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=range_name,
+    ).execute()
+
+    values = result.get("values", [])
+    target_str_formats = [
+        target_date.strftime("%-m/%-d"),   # 例: 4/26
+        target_date.strftime("%m/%d"),      # 例: 04/26
+        target_date.strftime("%Y/%m/%d"),   # 例: 2026/04/26
+        target_date.strftime("%-m/%-d/%Y"), # 例: 4/26/2026
+    ]
+
+    for i, row in enumerate(values):
+        if row and row[0].strip() in target_str_formats:
+            return i + 1  # 1始まりの行番号
+
+    print(f"日付が見つかりませんでした: {target_date}")
+    return None
+
+# ==========================================
+# スプレッドシートに販売数を書き込む
+# ==========================================
+def write_sales_to_sheet(service, row_number, sales_units):
+    range_name = f"{SHEET_TAB_NAME}!{SALES_COLUMN}{row_number}"
+    body = {"values": [[sales_units]]}
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=range_name,
+        valueInputOption="RAW",
+        body=body,
+    ).execute()
+    print(f"販売数を書き込みました: 行{row_number} = {sales_units}個")
+
+# ==========================================
+# スプレッドシートから在庫予測数を読み取る
+# ==========================================
+def read_inventory_forecast(service, row_number):
+    range_name = f"{SHEET_TAB_NAME}!{INVENTORY_COLUMN}{row_number}"
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=range_name,
+    ).execute()
+    values = result.get("values", [])
+    if values and values[0]:
+        try:
+            return int(float(values[0][0]))
+        except (ValueError, TypeError):
+            return "取得失敗"
+    return "取得失敗"
 
 # ==========================================
 # アクセストークンの取得
@@ -141,62 +221,6 @@ def aggregate_csv_data(csv_text, target_asins):
     return results
 
 # ==========================================
-# FBA在庫レポートで在庫数を取得
-# ==========================================
-def get_inventory(access_token, sku):
-    # GET_FBA_INVENTORY_PLAANNING_DATAレポートで手持ち在庫を取得
-    url = "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports"
-    headers = {
-        "x-amz-access-token": access_token,
-        "Content-Type": "application/json",
-    }
-
-    # 複数のレポートタイプを順番に試す
-    report_types = [
-        "GET_FBA_MYI_ALL_INVENTORY_DATA",
-        "GET_AFN_INVENTORY_DATA",
-        "GET_AFN_INVENTORY_DATA_BY_COUNTRY",
-    ]
-
-    for report_type in report_types:
-        print(f"在庫レポートタイプを試行中: {report_type}")
-        payload = {
-            "reportType": report_type,
-            "marketplaceIds": [MARKETPLACE_ID],
-        }
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            print(f"失敗: {response.status_code}")
-            continue
-
-        report_id = response.json().get("reportId")
-        document_id = wait_for_report(access_token, report_id)
-        if not document_id:
-            continue
-
-        csv_text = get_report_document_csv(access_token, document_id)
-        reader = csv.DictReader(io.StringIO(csv_text), delimiter="\t")
-        headers_list = reader.fieldnames
-        print(f"CSVヘッダー: {headers_list}")
-
-        for row in reader:
-            row_sku = row.get("seller-sku") or row.get("sku") or row.get("SKU") or ""
-            if row_sku == sku:
-                # 手持ち在庫のカラムを探す
-                quantity = (
-                    row.get("afn-fulfillable-quantity")
-                    or row.get("Afn Fulfillable Quantity")
-                    or row.get("fulfillable-quantity")
-                    or row.get("quantity-available")
-                    or "0"
-                )
-                print(f"在庫数取得成功: {quantity}")
-                return int(quantity)
-
-    print(f"全レポートタイプで取得失敗: {sku}")
-    return "取得失敗"
-
-# ==========================================
 # Slackに通知を送信
 # ==========================================
 def send_slack_notification(message):
@@ -232,6 +256,10 @@ def main():
     monthly_csv = get_report_document_csv(access_token, monthly_doc_id)
     monthly_results = aggregate_csv_data(monthly_csv, asins)
 
+    # Google Sheetsサービス初期化
+    print("Google Sheetsに接続中...")
+    sheets_service = get_sheets_service()
+
     # Slackメッセージの作成
     message = "📊 Amazon US 販売レポート\n"
     message += "━━━━━━━━━━━━━━━\n"
@@ -240,12 +268,23 @@ def main():
 
     for product in PRODUCTS:
         asin = product["asin"]
-        sku = product["sku"]
         name = product["name"]
 
         daily = daily_results[asin]
         monthly = monthly_results[asin]
-        inventory = get_inventory(access_token, sku)
+
+        # スプレッドシートに販売数を書き込む
+        row_number = find_row_by_date(sheets_service, yesterday_pt)
+        inventory_forecast = "取得失敗"
+
+        if row_number:
+            write_sales_to_sheet(sheets_service, row_number, daily["units"])
+            # 書き込み後に在庫予測数を読み取る（Sheetsの数式が計算されるまで少し待つ）
+            time.sleep(3)
+            inventory_forecast = read_inventory_forecast(sheets_service, row_number)
+            print(f"在庫予測数: {inventory_forecast}")
+        else:
+            print("対応する日付の行が見つかりませんでした")
 
         message += f"\n【{asin}】\n"
         message += f"{name}\n\n"
@@ -253,7 +292,7 @@ def main():
         message += f"販売数：{daily['units']}個\n"
         message += f"売上金額：${daily['sales']:,.2f}\n"
         message += f"返品数：{daily['returns']}件\n"
-        message += f"在庫数：{inventory}個\n\n"
+        message += f"在庫予測数：{inventory_forecast}個\n\n"
         message += "【当月累計】\n"
         message += f"販売数：{monthly['units']}個\n"
         message += f"売上金額：${monthly['sales']:,.2f}\n"
