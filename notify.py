@@ -70,10 +70,11 @@ def find_row_by_date(service, target_date):
 
     values = result.get("values", [])
     target_str_formats = [
-        target_date.strftime("%-m/%-d"),   # 例: 4/26
         target_date.strftime("%m/%d"),      # 例: 04/26
+        target_date.strftime("%-m/%-d"),   # 例: 4/26
         target_date.strftime("%Y/%m/%d"),   # 例: 2026/04/26
         target_date.strftime("%-m/%-d/%Y"), # 例: 4/26/2026
+        target_date.strftime("%m/%d/%Y"),   # 例: 04/26/2026
     ]
 
     for i, row in enumerate(values):
