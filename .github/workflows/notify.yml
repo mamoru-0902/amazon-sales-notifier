@@ -29,4 +29,4 @@ jobs:
           LWA_REFRESH_TOKEN: ${{ secrets.LWA_REFRESH_TOKEN }}
           SELLER_ID: ${{ secrets.SELLER_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: python debug_inventory.py
+        run: python notify.py
