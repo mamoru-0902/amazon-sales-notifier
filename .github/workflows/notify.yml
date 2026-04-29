@@ -3,7 +3,7 @@ name: Amazon Sales Notifier
 on:
   schedule:
   # 毎日日本時間17時10分に実行（UTC 08:10）- Updated 2026/04/29
-  - cron: '10 8 * * *'
+  - cron: '43 11 * * *'
 
 jobs:
   notify:
