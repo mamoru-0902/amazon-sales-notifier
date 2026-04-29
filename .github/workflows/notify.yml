@@ -3,7 +3,7 @@ name: Amazon Sales Notifier
 on:
   schedule:
     # 毎日日本時間17時10分に実行（UTC 08:10）
-    - cron: '10 8 * * *'
+    - cron: '59 11 * * *'
   workflow_dispatch:
   push:
     branches:
