@@ -33,6 +33,7 @@ SPREADSHEET_ID = "1jHV2OZfsclDfC4Irl5S0FNwxZELzsuiz3edKp2SIb94"
 SHEET_TAB_NAME = "Order数と配送計画_v2"
 DATE_COLUMN = "D"       # 日付列
 SALES_COLUMN = "F"      # 販売数入力列
+SESSION_COLUMN = "H"    # セッション数入力列
 INVENTORY_COLUMN = "N"  # 在庫予測数列
 
 # ==========================================
@@ -106,6 +107,20 @@ def write_sales_to_sheet(service, row_number, sales_units):
     print(f"販売数を書き込みました: 行{row_number} = {sales_units}個")
 
 # ==========================================
+# スプレッドシートにセッション数を書き込む
+# ==========================================
+def write_sessions_to_sheet(service, row_number, sessions):
+    range_name = f"{SHEET_TAB_NAME}!{SESSION_COLUMN}{row_number}"
+    body = {"values": [[sessions]]}
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=range_name,
+        valueInputOption="RAW",
+        body=body,
+    ).execute()
+    print(f"セッション数を書き込みました: 行{row_number} = {sessions}")
+
+# ==========================================
 # スプレッドシートから在庫予測数を読み取る
 # ==========================================
 def read_inventory_forecast(service, row_number):
@@ -147,6 +162,83 @@ def get_us_dates():
     yesterday_pt = today_pt - timedelta(days=1)
     first_day_of_month = today_pt.replace(day=1)
     return yesterday_pt, first_day_of_month, today_pt
+
+# ==========================================
+# FBA在庫データの取得
+# ==========================================
+def get_fba_inventory(access_token, sku):
+    url = "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries"
+    headers = {"x-amz-access-token": access_token}
+    params = {
+        "details": "true",
+        "granularityType": "Marketplace",
+        "granularityId": MARKETPLACE_ID,
+        "marketplaceIds": MARKETPLACE_ID,
+        "sellerSkus": sku,
+    }
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code != 200:
+        print(f"FBA在庫取得エラー: {response.status_code}")
+        return None
+
+    summaries = response.json().get("payload", {}).get("inventorySummaries", [])
+    if not summaries:
+        return None
+
+    details = summaries[0].get("inventoryDetails", {})
+    fulfillable = details.get("fulfillableQuantity", 0)
+    inbound_working = details.get("inboundWorkingQuantity", 0)
+    inbound_shipped = details.get("inboundShippedQuantity", 0)
+
+    return {
+        "fulfillable": fulfillable,
+        "inbound_working": inbound_working,
+        "inbound_shipped": inbound_shipped,
+        "subtotal": fulfillable + inbound_working,
+    }
+
+# ==========================================
+# ビジネスレポート（セッション数）の取得
+# ==========================================
+def get_session_count(access_token, target_date, asin):
+    url = "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports"
+    headers = {
+        "x-amz-access-token": access_token,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
+        "marketplaceIds": [MARKETPLACE_ID],
+        "dataStartTime": target_date.strftime("%Y-%m-%dT00:00:00Z"),
+        "dataEndTime": target_date.strftime("%Y-%m-%dT23:59:59Z"),
+        "reportOptions": {
+            "dateGranularity": "DAY",
+            "asinGranularity": "CHILD",
+        },
+    }
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code != 200:
+        print(f"セッションレポートリクエスト失敗: {response.status_code}")
+        return None
+
+    report_id = response.json().get("reportId")
+    document_id = wait_for_report(access_token, report_id)
+    if not document_id:
+        return None
+
+    doc_url_resp = requests.get(
+        f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
+        headers={"x-amz-access-token": access_token}
+    )
+    doc_url = doc_url_resp.json().get("url")
+    data = requests.get(doc_url).json()
+
+    for item in data.get("salesAndTrafficByAsin", []):
+        if item.get("childAsin") == asin or item.get("parentAsin") == asin:
+            traffic = item.get("trafficByAsin", {})
+            return traffic.get("sessions", None)
+
+    return None
 
 # ==========================================
 # 注文レポートをリクエスト・取得
