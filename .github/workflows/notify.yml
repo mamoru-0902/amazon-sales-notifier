@@ -30,4 +30,4 @@ jobs:
           SELLER_ID: ${{ secrets.SELLER_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
-        run: python notify.py
+        run: python debug_support.py
