@@ -160,7 +160,8 @@ def get_us_dates():
     now_pt = datetime.now(pt)
     today_pt = now_pt.date()
     yesterday_pt = today_pt - timedelta(days=1)
-    first_day_of_month = today_pt.replace(day=1)
+    # 昨日が先月の場合は先月の1日を当月開始日とする
+    first_day_of_month = yesterday_pt.replace(day=1)
     return yesterday_pt, first_day_of_month, today_pt
 
 # ==========================================
