@@ -373,13 +373,16 @@ def main():
         daily = daily_results[asin]
         monthly = monthly_results[asin]
 
+        # FBA在庫データを取得
+        print(f"FBA在庫を取得中: {product['sku']}")
+        fba_inventory = get_fba_inventory(access_token, product["sku"])
+
         # スプレッドシートに販売数を書き込む
         row_number = find_row_by_date(sheets_service, yesterday_pt)
         inventory_forecast = "取得失敗"
 
         if row_number:
             write_sales_to_sheet(sheets_service, row_number, daily["units"])
-            # 書き込み後に在庫予測数を読み取る（Sheetsの数式が計算されるまで少し待つ）
             time.sleep(3)
             inventory_forecast = read_inventory_forecast(sheets_service, row_number)
             print(f"在庫予測数: {inventory_forecast}")
@@ -391,7 +394,16 @@ def main():
         message += "【本日の実績】\n"
         message += f"販売数：{daily['units']}個\n"
         message += f"売上金額：${daily['sales']:,.2f}\n"
-        message += f"返品数：{daily['returns']}件\n"
+        message += f"返品数：{daily['returns']}件\n\n"
+        if fba_inventory:
+            subtotal = fba_inventory['fulfillable'] + fba_inventory['inbound_working']
+            message += "【在庫状況】\n"
+            message += f"出荷可能：{fba_inventory['fulfillable']}個\n"
+            message += f"納品作業中：{fba_inventory['inbound_working']}個\n"
+            message += f"合計：{subtotal}個\n"
+            message += f"輸送中：{fba_inventory['inbound_shipped']}個\n\n"
+        else:
+            message += "【在庫状況】\n取得失敗\n\n"
         message += f"在庫予測数：{inventory_forecast}個\n\n"
         message += "【当月累計】\n"
         message += f"販売数：{monthly['units']}個\n"
